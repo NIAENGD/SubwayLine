@@ -19,12 +19,12 @@ DEFAULT_CITY = CityConfig(
     total_jobs=600_000,
     tile_size=128,
     employment_preset="polycentric",
-    population_preset="rings",
+    population_preset="mixed_ringed_us_style",
     halo_strength=0.35,
     center_shares=(0.45, 0.30, 0.25),
     center_sizes=(12, 9, 7),
     jobs_housing_interaction=0.5,
-    residential_cluster_count=6,
+    residential_cluster_count=10,
     random_seed=101,
 )
 

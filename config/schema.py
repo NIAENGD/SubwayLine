@@ -51,8 +51,10 @@ class CityConfig:
             raise ValueError("center_shares must sum to 1.0.")
         if any(size <= 0 for size in self.center_sizes):
             raise ValueError("center_sizes must all be positive.")
-        if self.residential_cluster_count <= 0:
-            raise ValueError("residential_cluster_count must be positive.")
+        if not 0.0 <= self.jobs_housing_interaction <= 1.0:
+            raise ValueError("jobs_housing_interaction must be in [0, 1].")
+        if not 8 <= self.residential_cluster_count <= 12:
+            raise ValueError("residential_cluster_count must be in [8, 12].")
         if self.random_seed < 0:
             raise ValueError("random_seed must be non-negative.")
 
