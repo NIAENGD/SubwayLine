@@ -2,6 +2,23 @@
 
 Synthetic Polycentric City Transit Optimizer
 
+## Local Python setup
+
+Use Python 3.11+ (3.12 also works) and install dependencies in a virtual environment:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+Then run:
+
+```bash
+python main.py
+```
+
 ## Objective
 
 Build a modular Python application that generates a synthetic 64×64 U.S.-style city, simulates jobs and population distributions, estimates commuting demand and transit mode choice, and searches for the optimal transit network for 1 through 8 lines. The application must launch from `main.py`, open a GUI, expose comprehensive settings, support reproducible experiments via saved configs and random seeds, and export results for research use.
