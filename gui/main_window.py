@@ -8,15 +8,25 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
+from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFormLayout,
     QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QTabWidget,
+    QScrollArea,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -34,10 +44,103 @@ from gui.tabs.batch_tab import BatchTab
 from gui.tabs.city_tab import CityTab
 from gui.tabs.demand_tab import DemandTab
 from gui.tabs.optimization_tab import OptimizationTab
-from gui.tabs.results_tab import ResultsTab
 from gui.tabs.transit_tab import TransitTab
+from gui.plots.network_plot import plot_interactive_density_map
+from optimize.initial_builder import NetworkPlan
 from optimize.sweep_runner import run_staged_line_sweep
 
+
+class GenerateCityWorker(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+    progress = Signal(int, str)
+
+    def __init__(self, config: AppConfig) -> None:
+        super().__init__()
+        self.config = config
+
+    def run(self) -> None:
+        try:
+            cfg = self.config
+            self.progress.emit(5, "Generating city: jobs")
+            jobs = generate_jobs_grid(total_jobs=cfg.city.total_jobs, preset_name=cfg.city.employment_preset, seed=cfg.city.random_seed).jobs
+            self.progress.emit(25, "Generating city: population")
+            population = generate_population_grid(
+                total_population=cfg.city.total_population,
+                preset_name=cfg.city.population_preset,
+                seed=cfg.city.random_seed,
+                jobs=jobs,
+                jobs_housing_interaction=cfg.city.jobs_housing_interaction,
+                residential_cluster_count=cfg.city.residential_cluster_count,
+            ).population
+            self.progress.emit(45, "Generating city: demand prep")
+
+            rows, cols = jobs.shape
+            yy, xx = np.indices((rows, cols), dtype=float)
+            coords = np.stack([xx.ravel(), yy.ravel()], axis=1)
+            dif = coords[:, None, :] - coords[None, :, :]
+            distance_km = np.sqrt((dif**2).sum(axis=2))
+            car_time = compute_car_time(distance_km=distance_km, car_speed_kmh=cfg.demand.car_speed_kmh)
+            dest_probs = destination_probabilities(
+                jobs=jobs,
+                car_time_min=car_time,
+                alpha=cfg.demand.destination_choice_alpha,
+                beta=cfg.demand.impedance_beta,
+            )
+            self.progress.emit(75, "Generating city: OD matrix")
+            workers = generate_workers(population, cfg.demand.worker_ratio)
+            od = build_od_matrix(workers=workers, destination_probabilities=dest_probs)
+            self.progress.emit(100, "City generated")
+            self.finished.emit({"jobs": jobs, "population": population, "od": od})
+        except Exception as exc:  # pragma: no cover - UI error path
+            self.failed.emit(str(exc))
+
+
+class SolveWorker(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+    progress = Signal(int, str)
+
+    def __init__(self, *, config: AppConfig, jobs: np.ndarray, population: np.ndarray, od: np.ndarray, max_lines: int) -> None:
+        super().__init__()
+        self.config = config
+        self.jobs = jobs
+        self.population = population
+        self.od = od
+        self.max_lines = max_lines
+
+    def run(self) -> None:
+        try:
+            cfg = self.config
+
+            def _on_progress(line_count: int, max_count: int, stage: str) -> None:
+                base = int(((line_count - 1) / max_count) * 100)
+                stage_boost = {"build_initial_network": 8, "annealing": 16, "saved": 28}.get(stage, 0)
+                self.progress.emit(min(99, base + stage_boost), f"Solving {line_count}/{max_count}: {stage.replace('_', ' ')}")
+
+            result_map = run_staged_line_sweep(
+                population=self.population,
+                jobs=self.jobs,
+                od_matrix=self.od,
+                max_lines=self.max_lines,
+                objective_profile=cfg.batch.presets[0] if cfg.batch.presets else "balanced",
+                iterations=cfg.optimization.iterations,
+                temperature_schedule=cfg.optimization.temperature_schedule,
+                output_dir=Path("outputs/gui") / datetime.now(UTC).strftime("%Y%m%d_%H%M%S"),
+                random_seed=cfg.optimization.random_seed,
+                progress_callback=_on_progress,
+            )
+            selected_count = min(cfg.transit_rules.line_count, self.max_lines)
+            selected = result_map[selected_count]
+            self.finished.emit(
+                {
+                    "networks": [result_map[k].best_plan for k in sorted(result_map)],
+                    "selected_plan": selected.best_plan,
+                    "metrics": selected.score_summary,
+                }
+            )
+        except Exception as exc:  # pragma: no cover - UI error path
+            self.failed.emit(str(exc))
 
 
 
@@ -57,27 +160,19 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("SubwayLine")
         self.state = AppState()
+        self.current_plan: NetworkPlan | None = None
+        self._active_thread: QThread | None = None
         if initial_config is not None:
             self.state.set_config(initial_config)
 
         root = QWidget()
         self.setCentralWidget(root)
         outer = QVBoxLayout(root)
-
-        self.tabs = QTabWidget()
         self.city_tab = CityTab(self.state.config.city)
         self.demand_tab = DemandTab(self.state.config.demand)
         self.transit_tab = TransitTab(self.state.config.transit_rules)
         self.optimization_tab = OptimizationTab(self.state.config.optimization)
-        self.results_tab = ResultsTab()
         self.batch_tab = BatchTab(self.state.config.batch)
-
-        self.tabs.addTab(self.city_tab, "City")
-        self.tabs.addTab(self.demand_tab, "Demand")
-        self.tabs.addTab(self.transit_tab, "Transit rules")
-        self.tabs.addTab(self.optimization_tab, "Optimization")
-        self.tabs.addTab(self.results_tab, "Results")
-        self.tabs.addTab(self.batch_tab, "Batch runs")
 
         buttons = QHBoxLayout()
         self.btn_generate = QPushButton("Generate City")
@@ -100,12 +195,21 @@ class MainWindow(QMainWindow):
         ]:
             buttons.addWidget(b)
 
+        body_split = QSplitter()
+        body_split.setChildrenCollapsible(False)
+        body_split.addWidget(self._build_left_sidebar())
+        body_split.addWidget(self._build_center_map())
+        body_split.addWidget(self._build_right_sidebar())
+        body_split.setStretchFactor(0, 0)
+        body_split.setStretchFactor(1, 1)
+        body_split.setStretchFactor(2, 0)
+
         self.status_label = QLabel("Ready")
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         outer.addLayout(buttons)
-        outer.addWidget(self.tabs)
+        outer.addWidget(body_split)
         outer.addWidget(self.progress_bar)
         outer.addWidget(self.status_label)
 
@@ -124,6 +228,65 @@ class MainWindow(QMainWindow):
             self.transit_tab.load_from_config(initial_config.transit_rules)
             self.optimization_tab.load_from_config(initial_config.optimization)
             self.batch_tab.load_from_config(initial_config.batch)
+        self._redraw_map()
+
+    def _build_left_sidebar(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.addWidget(self._wrap_section("City", self.city_tab))
+        layout.addWidget(self._wrap_section("Demand", self.demand_tab))
+        layout.addWidget(self._wrap_section("Transit Rules", self.transit_tab))
+        layout.addWidget(self._wrap_section("Optimization", self.optimization_tab))
+        layout.addWidget(self._wrap_section("Batch", self.batch_tab))
+        layout.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(container)
+        return scroll
+
+    def _build_center_map(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        self.map_figure = Figure(figsize=(6, 6))
+        self.map_canvas = FigureCanvasQTAgg(self.map_figure)
+        layout.addWidget(self.map_canvas)
+        return panel
+
+    def _build_right_sidebar(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        map_controls = QGroupBox("Map controls")
+        map_form = QFormLayout(map_controls)
+        self.layer_selector = QComboBox()
+        self.layer_selector.addItems(["Population", "Jobs"])
+        self.show_lines = QCheckBox("Show generated lines overlay")
+        self.show_stations = QCheckBox("Show stations")
+        self.show_transfers = QCheckBox("Highlight transfers")
+        self.show_lines.setChecked(True)
+        self.show_stations.setChecked(True)
+        self.show_transfers.setChecked(True)
+        map_form.addRow("Base layer", self.layer_selector)
+        map_form.addRow(self.show_lines)
+        map_form.addRow(self.show_stations)
+        map_form.addRow(self.show_transfers)
+        layout.addWidget(map_controls)
+
+        self.metrics_table = QTableWidget(0, 2)
+        self.metrics_table.setHorizontalHeaderLabels(["Metric", "Value"])
+        layout.addWidget(self.metrics_table)
+        layout.addStretch(1)
+
+        self.layer_selector.currentIndexChanged.connect(self._redraw_map)
+        self.show_lines.toggled.connect(self._redraw_map)
+        self.show_stations.toggled.connect(self._redraw_map)
+        self.show_transfers.toggled.connect(self._redraw_map)
+        return panel
+
+    def _wrap_section(self, title: str, widget: QWidget) -> QGroupBox:
+        group = QGroupBox(title)
+        layout = QVBoxLayout(group)
+        layout.addWidget(widget)
+        return group
 
     def _parse_csv_floats(self, text: str) -> tuple[float, ...]:
         return tuple(float(x.strip()) for x in text.split(",") if x.strip())
@@ -186,94 +349,34 @@ class MainWindow(QMainWindow):
         return replace(self.state.config, city=c, demand=d, transit_rules=t, optimization=o, batch=b)
 
     def on_generate_city(self) -> None:
-        try:
-            self.progress_bar.setValue(0)
-            self.status_label.setText("Generating city: jobs")
-            self.state.set_config(self._collect_config())
-            cfg = self.state.config
-            jobs = generate_jobs_grid(total_jobs=cfg.city.total_jobs, preset_name=cfg.city.employment_preset, seed=cfg.city.random_seed).jobs
-            self.progress_bar.setValue(20)
-            self.status_label.setText("Generating city: population")
-            population = generate_population_grid(
-                total_population=cfg.city.total_population,
-                preset_name=cfg.city.population_preset,
-                seed=cfg.city.random_seed,
-                jobs=jobs,
-                jobs_housing_interaction=cfg.city.jobs_housing_interaction,
-                residential_cluster_count=cfg.city.residential_cluster_count,
-            ).population
-            self.progress_bar.setValue(45)
-            self.status_label.setText("Generating city: demand prep")
-
-            rows, cols = jobs.shape
-            yy, xx = np.indices((rows, cols), dtype=float)
-            coords = np.stack([xx.ravel(), yy.ravel()], axis=1)
-            dif = coords[:, None, :] - coords[None, :, :]
-            distance_km = np.sqrt((dif**2).sum(axis=2))
-            car_time = compute_car_time(distance_km=distance_km, car_speed_kmh=cfg.demand.car_speed_kmh)
-            dest_probs = destination_probabilities(
-                jobs=jobs,
-                car_time_min=car_time,
-                alpha=cfg.demand.destination_choice_alpha,
-                beta=cfg.demand.impedance_beta,
-            )
-            self.progress_bar.setValue(75)
-            self.status_label.setText("Generating city: OD matrix")
-            workers = generate_workers(population, cfg.demand.worker_ratio)
-            od = build_od_matrix(workers=workers, destination_probabilities=dest_probs)
-
-            self.state.jobs = jobs
-            self.state.population = population
-            self.state.od = od
-            self.progress_bar.setValue(100)
-            self.status_label.setText("City generated")
-        except Exception as exc:
-            QMessageBox.critical(self, "Generate City failed", str(exc))
+        self.state.set_config(self._collect_config())
+        self.current_plan = None
+        self._set_busy(True)
+        self.progress_bar.setValue(0)
+        self._start_worker(GenerateCityWorker(self.state.config), self._on_generation_finished, "Generate City failed")
 
     def _run_solver(self, max_lines: int) -> None:
         if self.state.jobs is None or self.state.population is None or self.state.od is None:
-            self.on_generate_city()
-        cfg = self.state.config
+            QMessageBox.information(self, "No city", "Generate city data before solving.")
+            return
+        self._set_busy(True)
         self.progress_bar.setValue(0)
-        self.status_label.setText("Solving network")
-
-        def _on_progress(line_count: int, max_count: int, stage: str) -> None:
-            base = int(((line_count - 1) / max_count) * 100)
-            stage_boost = {"build_initial_network": 8, "annealing": 16, "saved": 28}.get(stage, 0)
-            self.progress_bar.setValue(min(99, base + stage_boost))
-            self.status_label.setText(f"Solving {line_count}/{max_count}: {stage.replace('_', ' ')}")
-
-        result_map = run_staged_line_sweep(
-            population=self.state.population,
-            jobs=self.state.jobs,
-            od_matrix=self.state.od,
-            max_lines=max_lines,
-            objective_profile=cfg.batch.presets[0] if cfg.batch.presets else "balanced",
-            iterations=cfg.optimization.iterations,
-            temperature_schedule=cfg.optimization.temperature_schedule,
-            output_dir=Path("outputs/gui") / datetime.now(UTC).strftime("%Y%m%d_%H%M%S"),
-            random_seed=cfg.optimization.random_seed,
-            progress_callback=_on_progress,
+        self._start_worker(
+            SolveWorker(
+                config=self.state.config,
+                jobs=self.state.jobs,
+                population=self.state.population,
+                od=self.state.od,
+                max_lines=max_lines,
+            ),
+            self._on_solver_finished,
+            "Solve failed",
         )
-        self.state.networks = [result_map[k].best_plan for k in sorted(result_map)]
-        selected_count = min(cfg.transit_rules.line_count, max_lines)
-        selected = result_map[selected_count]
-        self.state.metrics = selected.score_summary
-        self.results_tab.render(
-            jobs=self.state.jobs,
-            population=self.state.population,
-            od=self.state.od,
-            plan=selected.best_plan,
-            weighted_terms=selected.score_summary.get("weighted_terms", {}),
-        )
-        self.progress_bar.setValue(100)
 
     def on_solve_selected(self) -> None:
         try:
             self.state.set_config(self._collect_config())
             self._run_solver(self.state.config.transit_rules.line_count)
-            self.status_label.setText("Solved selected line count")
-            self.tabs.setCurrentWidget(self.results_tab)
         except Exception as exc:
             QMessageBox.critical(self, "Solve failed", str(exc))
 
@@ -281,8 +384,6 @@ class MainWindow(QMainWindow):
         try:
             self.state.set_config(self._collect_config())
             self._run_solver(8)
-            self.status_label.setText("Solved 1–8 sweep")
-            self.tabs.setCurrentWidget(self.results_tab)
         except Exception as exc:
             QMessageBox.critical(self, "Solve 1-8 failed", str(exc))
 
@@ -316,8 +417,7 @@ class MainWindow(QMainWindow):
         if not folder:
             return
         base = Path(folder)
-        for key, (fig, _) in self.results_tab.figures.items():
-            fig.savefig(base / f"{key}.png", dpi=150, bbox_inches="tight")
+        self.map_figure.savefig(base / "city_map.png", dpi=150, bbox_inches="tight")
         self.status_label.setText(f"Exported images to {folder}")
 
     def on_export_csv(self) -> None:
@@ -343,4 +443,90 @@ class MainWindow(QMainWindow):
         self.transit_tab.load_from_config(cfg.transit_rules)
         self.optimization_tab.load_from_config(cfg.optimization)
         self.batch_tab.load_from_config(cfg.batch)
+        self._redraw_map()
         self.status_label.setText("Reset to defaults")
+
+    def _start_worker(self, worker: QObject, on_finished, error_title: str) -> None:
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)  # type: ignore[attr-defined]
+        worker.progress.connect(self._on_worker_progress)  # type: ignore[attr-defined]
+        worker.finished.connect(on_finished)  # type: ignore[attr-defined]
+        worker.finished.connect(thread.quit)  # type: ignore[attr-defined]
+        worker.failed.connect(lambda message: self._on_worker_failed(error_title, message))  # type: ignore[attr-defined]
+        worker.failed.connect(thread.quit)  # type: ignore[attr-defined]
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._active_thread = thread
+        thread.start()
+
+    def _on_worker_progress(self, value: int, message: str) -> None:
+        self.progress_bar.setValue(value)
+        self.status_label.setText(message)
+
+    def _on_generation_finished(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        self.state.jobs = data.get("jobs")
+        self.state.population = data.get("population")
+        self.state.od = data.get("od")
+        self.progress_bar.setValue(100)
+        self.status_label.setText("City generated")
+        self._set_busy(False)
+        self._redraw_map()
+
+    def _on_solver_finished(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        self.state.networks = data.get("networks", [])
+        self.current_plan = data.get("selected_plan")
+        self.state.metrics = data.get("metrics", {})
+        self._refresh_metrics_table()
+        self.progress_bar.setValue(100)
+        self.status_label.setText("Solver finished")
+        self._set_busy(False)
+        self._redraw_map()
+
+    def _on_worker_failed(self, title: str, message: str) -> None:
+        self._set_busy(False)
+        QMessageBox.critical(self, title, message)
+
+    def _set_busy(self, busy: bool) -> None:
+        self.btn_generate.setEnabled(not busy)
+        self.btn_solve_selected.setEnabled(not busy)
+        self.btn_solve_1_8.setEnabled(not busy)
+        self.btn_reset.setEnabled(not busy)
+
+    def _refresh_metrics_table(self) -> None:
+        metrics = self.state.metrics if isinstance(self.state.metrics, dict) else {}
+        flat_rows: list[tuple[str, object]] = []
+        for key, value in metrics.items():
+            if isinstance(value, dict):
+                for child_key, child_value in value.items():
+                    flat_rows.append((f"{key}.{child_key}", child_value))
+            else:
+                flat_rows.append((key, value))
+        self.metrics_table.setRowCount(len(flat_rows))
+        for row, (name, value) in enumerate(flat_rows):
+            self.metrics_table.setItem(row, 0, QTableWidgetItem(str(name)))
+            self.metrics_table.setItem(row, 1, QTableWidgetItem(f"{value}"))
+
+    def _redraw_map(self) -> None:
+        ax = self.map_figure.subplots()
+        if self.state.jobs is None or self.state.population is None:
+            ax.clear()
+            ax.set_title("Generate a city to view the map")
+            self.map_canvas.draw_idle()
+            return
+
+        base_layer = self.state.population if self.layer_selector.currentText() == "Population" else self.state.jobs
+        rows, cols = base_layer.shape
+        plot_interactive_density_map(
+            ax,
+            base_layer=base_layer,
+            layer_title=f"City map: {self.layer_selector.currentText()}",
+            plan=self.current_plan if self.current_plan is not None else NetworkPlan(lines=[]),
+            grid_shape=(rows, cols),
+            show_lines=self.show_lines.isChecked() and self.current_plan is not None,
+            show_stations=self.show_stations.isChecked() and self.current_plan is not None,
+            show_transfers=self.show_transfers.isChecked() and self.current_plan is not None,
+        )
+        self.map_canvas.draw_idle()
