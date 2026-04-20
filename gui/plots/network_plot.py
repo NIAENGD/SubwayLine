@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 from matplotlib.axes import Axes
+from matplotlib.ticker import MaxNLocator
 
 from optimize.initial_builder import NetworkPlan
 
@@ -63,7 +64,7 @@ def plot_interactive_density_map(
     rows, cols = grid_shape
     ax.clear()
     img = np.asarray(base_layer, dtype=float)
-    ax.imshow(img, origin="lower", cmap="viridis", alpha=0.95)
+    ax.imshow(img, origin="lower", cmap="viridis", alpha=0.95, interpolation="nearest")
 
     station_to_lines: dict[tuple[float, float], set[str]] = {}
     for line in plan.lines:
@@ -101,8 +102,11 @@ def plot_interactive_density_map(
 
     ax.set_xlim(-0.5, cols - 0.5)
     ax.set_ylim(-0.5, rows - 0.5)
+    ax.set_aspect("equal", adjustable="box")
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=12))
+    ax.yaxis.set_major_locator(MaxNLocator(integer=True, nbins=12))
     ax.set_title(layer_title)
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
+    ax.set_xlabel("Tile X")
+    ax.set_ylabel("Tile Y")
     if show_stations or show_transfers:
         ax.legend(loc="upper right", fontsize=8)
