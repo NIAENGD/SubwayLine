@@ -5,7 +5,17 @@ from __future__ import annotations
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from PySide6.QtWidgets import QGridLayout, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from gui.plots.charts import plot_load_chart, plot_score_breakdown
 from gui.plots.heatmaps import (
@@ -14,7 +24,7 @@ from gui.plots.heatmaps import (
     plot_jobs_heatmap,
     plot_population_heatmap,
 )
-from gui.plots.network_plot import plot_network_map, plot_od_desire_lines
+from gui.plots.network_plot import plot_interactive_density_map, plot_network_map, plot_od_desire_lines
 from network.metrics import compute_metric_components
 from optimize.initial_builder import NetworkPlan
 
@@ -23,10 +33,28 @@ class ResultsTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("Interactive map layer"))
+        self.layer_selector = QComboBox()
+        self.layer_selector.addItems(["Population density", "Job density", "Transit coverage", "Accessibility score"])
+        self.show_lines = QCheckBox("Show lines")
+        self.show_stations = QCheckBox("Show stations")
+        self.show_transfers = QCheckBox("Highlight transfers")
+        self.show_lines.setChecked(True)
+        self.show_stations.setChecked(True)
+        self.show_transfers.setChecked(True)
+        controls.addWidget(self.layer_selector)
+        controls.addWidget(self.show_lines)
+        controls.addWidget(self.show_stations)
+        controls.addWidget(self.show_transfers)
+        controls.addStretch(1)
+
         grid = QGridLayout()
         self.figures: dict[str, tuple[Figure, FigureCanvasQTAgg]] = {}
+        self._latest_payload: dict[str, object] = {}
 
         keys = [
+            "interactive_map",
             "jobs",
             "population",
             "od",
@@ -44,8 +72,13 @@ class ResultsTab(QWidget):
 
         self.metrics_table = QTableWidget(0, 2)
         self.metrics_table.setHorizontalHeaderLabels(["Metric", "Value"])
+        layout.addLayout(controls)
         layout.addLayout(grid)
         layout.addWidget(self.metrics_table)
+        self.layer_selector.currentIndexChanged.connect(self._redraw_interactive_map)
+        self.show_lines.toggled.connect(self._redraw_interactive_map)
+        self.show_stations.toggled.connect(self._redraw_interactive_map)
+        self.show_transfers.toggled.connect(self._redraw_interactive_map)
 
     def render(
         self,
@@ -71,6 +104,14 @@ class ResultsTab(QWidget):
         plot_network_map(self.figures["network"][0].subplots(), plan, (rows, cols))
         plot_coverage_map(self.figures["coverage"][0].subplots(), coverage)
         plot_accessibility_map(self.figures["accessibility"][0].subplots(), jobs, coverage)
+        self._latest_payload = {
+            "jobs": jobs,
+            "population": population,
+            "coverage": coverage,
+            "plan": plan,
+            "grid_shape": (rows, cols),
+        }
+        self._redraw_interactive_map()
 
         line_loads = {line.id: float(len(line.points)) for line in plan.lines}
         plot_load_chart(self.figures["loads"][0].subplots(), line_loads)
@@ -85,3 +126,35 @@ class ResultsTab(QWidget):
         for i, (name, val) in enumerate(metrics_dict.items()):
             self.metrics_table.setItem(i, 0, QTableWidgetItem(name))
             self.metrics_table.setItem(i, 1, QTableWidgetItem(f"{val:.4f}"))
+
+    def _redraw_interactive_map(self) -> None:
+        if not self._latest_payload:
+            return
+        jobs = np.asarray(self._latest_payload["jobs"], dtype=float)
+        population = np.asarray(self._latest_payload["population"], dtype=float)
+        coverage = np.asarray(self._latest_payload["coverage"], dtype=float)
+        plan = self._latest_payload["plan"]
+        grid_shape = self._latest_payload["grid_shape"]
+
+        layer_name = self.layer_selector.currentText()
+        if layer_name == "Population density":
+            base_layer = population
+        elif layer_name == "Job density":
+            base_layer = jobs
+        elif layer_name == "Transit coverage":
+            base_layer = coverage
+        else:
+            base_layer = jobs * (0.25 + 0.75 * coverage)
+
+        fig, canvas = self.figures["interactive_map"]
+        plot_interactive_density_map(
+            fig.subplots(),
+            base_layer=base_layer,
+            layer_title=f"Interactive map: {layer_name}",
+            plan=plan,
+            grid_shape=grid_shape,
+            show_lines=self.show_lines.isChecked(),
+            show_stations=self.show_stations.isChecked(),
+            show_transfers=self.show_transfers.isChecked(),
+        )
+        canvas.draw_idle()

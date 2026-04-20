@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QTabWidget,
     QVBoxLayout,
@@ -100,8 +101,12 @@ class MainWindow(QMainWindow):
             buttons.addWidget(b)
 
         self.status_label = QLabel("Ready")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
         outer.addLayout(buttons)
         outer.addWidget(self.tabs)
+        outer.addWidget(self.progress_bar)
         outer.addWidget(self.status_label)
 
         self.btn_generate.clicked.connect(self.on_generate_city)
@@ -182,9 +187,13 @@ class MainWindow(QMainWindow):
 
     def on_generate_city(self) -> None:
         try:
+            self.progress_bar.setValue(0)
+            self.status_label.setText("Generating city: jobs")
             self.state.set_config(self._collect_config())
             cfg = self.state.config
             jobs = generate_jobs_grid(total_jobs=cfg.city.total_jobs, preset_name=cfg.city.employment_preset, seed=cfg.city.random_seed).jobs
+            self.progress_bar.setValue(20)
+            self.status_label.setText("Generating city: population")
             population = generate_population_grid(
                 total_population=cfg.city.total_population,
                 preset_name=cfg.city.population_preset,
@@ -193,6 +202,8 @@ class MainWindow(QMainWindow):
                 jobs_housing_interaction=cfg.city.jobs_housing_interaction,
                 residential_cluster_count=cfg.city.residential_cluster_count,
             ).population
+            self.progress_bar.setValue(45)
+            self.status_label.setText("Generating city: demand prep")
 
             rows, cols = jobs.shape
             yy, xx = np.indices((rows, cols), dtype=float)
@@ -206,12 +217,15 @@ class MainWindow(QMainWindow):
                 alpha=cfg.demand.destination_choice_alpha,
                 beta=cfg.demand.impedance_beta,
             )
+            self.progress_bar.setValue(75)
+            self.status_label.setText("Generating city: OD matrix")
             workers = generate_workers(population, cfg.demand.worker_ratio)
             od = build_od_matrix(workers=workers, destination_probabilities=dest_probs)
 
             self.state.jobs = jobs
             self.state.population = population
             self.state.od = od
+            self.progress_bar.setValue(100)
             self.status_label.setText("City generated")
         except Exception as exc:
             QMessageBox.critical(self, "Generate City failed", str(exc))
@@ -220,6 +234,15 @@ class MainWindow(QMainWindow):
         if self.state.jobs is None or self.state.population is None or self.state.od is None:
             self.on_generate_city()
         cfg = self.state.config
+        self.progress_bar.setValue(0)
+        self.status_label.setText("Solving network")
+
+        def _on_progress(line_count: int, max_count: int, stage: str) -> None:
+            base = int(((line_count - 1) / max_count) * 100)
+            stage_boost = {"build_initial_network": 8, "annealing": 16, "saved": 28}.get(stage, 0)
+            self.progress_bar.setValue(min(99, base + stage_boost))
+            self.status_label.setText(f"Solving {line_count}/{max_count}: {stage.replace('_', ' ')}")
+
         result_map = run_staged_line_sweep(
             population=self.state.population,
             jobs=self.state.jobs,
@@ -230,6 +253,7 @@ class MainWindow(QMainWindow):
             temperature_schedule=cfg.optimization.temperature_schedule,
             output_dir=Path("outputs/gui") / datetime.now(UTC).strftime("%Y%m%d_%H%M%S"),
             random_seed=cfg.optimization.random_seed,
+            progress_callback=_on_progress,
         )
         self.state.networks = [result_map[k].best_plan for k in sorted(result_map)]
         selected_count = min(cfg.transit_rules.line_count, max_lines)
@@ -242,6 +266,7 @@ class MainWindow(QMainWindow):
             plan=selected.best_plan,
             weighted_terms=selected.score_summary.get("weighted_terms", {}),
         )
+        self.progress_bar.setValue(100)
 
     def on_solve_selected(self) -> None:
         try:

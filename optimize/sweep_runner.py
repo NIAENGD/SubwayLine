@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -62,6 +62,7 @@ def run_staged_line_sweep(
     temperature_schedule: tuple[float, float] = (1.0, 0.01),
     output_dir: str | Path = "outputs/optimization_sweep",
     random_seed: int = 0,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> dict[int, LineCountResult]:
     """Solve 1-line through N-line cases using warm-start chaining.
 
@@ -88,6 +89,8 @@ def run_staged_line_sweep(
     warm_start: NetworkPlan | None = None
 
     for line_count in range(1, max_lines + 1):
+        if progress_callback is not None:
+            progress_callback(line_count, max_lines, "build_initial_network")
         initial = build_initial_network(
             line_count=line_count,
             corridors=corridors,
@@ -96,6 +99,8 @@ def run_staged_line_sweep(
             warm_start=warm_start,
         )
 
+        if progress_callback is not None:
+            progress_callback(line_count, max_lines, "annealing")
         annealed: AnnealingResult = refine_with_annealing(
             initial_plan=initial,
             population=pop,
@@ -123,6 +128,8 @@ def run_staged_line_sweep(
         )
         results[line_count] = result
         _save_line_count_outputs(out_dir, result)
+        if progress_callback is not None:
+            progress_callback(line_count, max_lines, "saved")
 
     manifest = {
         "max_lines": max_lines,
