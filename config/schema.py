@@ -41,8 +41,8 @@ class CityConfig:
     def __post_init__(self) -> None:
         if self.total_population <= 0 or self.total_jobs <= 0:
             raise ValueError("Population and jobs must be positive.")
-        if self.tile_size <= 0:
-            raise ValueError("tile_size must be positive.")
+        if self.tile_size != 64:
+            raise ValueError("tile_size is fixed at 64.")
         if len(self.center_shares) != len(self.center_sizes):
             raise ValueError("center_shares and center_sizes must have equal length.")
         if not self.center_shares:
@@ -81,7 +81,6 @@ class DemandConfig:
 @dataclass(frozen=True)
 class TransitRulesConfig:
     line_count: int
-    station_spacing_m: int
     access_radius_m: int
     transfer_penalty_min: float
     max_turn_angle_deg: float
@@ -93,8 +92,8 @@ class TransitRulesConfig:
     def __post_init__(self) -> None:
         if self.line_count <= 0:
             raise ValueError("line_count must be positive.")
-        if self.station_spacing_m <= 0 or self.access_radius_m <= 0:
-            raise ValueError("station spacing and access radius must be positive.")
+        if self.access_radius_m <= 0:
+            raise ValueError("access radius must be positive.")
         if self.maximum_transfers < 0:
             raise ValueError("maximum_transfers must be >= 0.")
         if self.headway_min <= 0:
@@ -182,7 +181,13 @@ class AppConfig:
                 }
             ),
             demand=DemandConfig(**data["demand"]),
-            transit_rules=TransitRulesConfig(**data["transit_rules"]),
+            transit_rules=TransitRulesConfig(
+                **{
+                    k: v
+                    for k, v in data["transit_rules"].items()
+                    if k in TransitRulesConfig.__dataclass_fields__
+                }
+            ),
             optimization=OptimizationConfig(
                 **{
                     **data["optimization"],

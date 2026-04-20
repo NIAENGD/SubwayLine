@@ -101,10 +101,8 @@ Those can be Phase 2 or Phase 3 extensions.
 
 Use a 64×64 raster grid.
 
-Default tile size: 0.5 miles per tile.
-Default total city size: 32×32 miles.
-
-Tile size must be user-configurable.
+Tile size is fixed at 0.5 miles per tile.
+Total city size is fixed at 32×32 miles.
 
 Each tile stores:
 
