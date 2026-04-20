@@ -62,7 +62,7 @@ DEFAULT_OPTIMIZATION = OptimizationConfig(
 
 DEFAULT_BATCH = BatchConfig(
     seeds=(101, 202, 303),
-    presets=("balanced", "ridership_max", "coverage_max"),
+    presets=("balanced", "ridership-max", "coverage-max"),
     line_count_sweep=(1, 2, 3, 4, 5, 6, 7, 8),
     export_aggregated_metrics=True,
 )
