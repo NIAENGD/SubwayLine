@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -162,6 +163,7 @@ class MainWindow(QMainWindow):
         self.state = AppState()
         self.current_plan: NetworkPlan | None = None
         self._active_thread: QThread | None = None
+        self._active_worker: QObject | None = None
         if initial_config is not None:
             self.state.set_config(initial_config)
 
@@ -274,6 +276,10 @@ class MainWindow(QMainWindow):
         self.metrics_table = QTableWidget(0, 2)
         self.metrics_table.setHorizontalHeaderLabels(["Metric", "Value"])
         layout.addWidget(self.metrics_table)
+        self.log_output = QTextEdit()
+        self.log_output.setReadOnly(True)
+        self.log_output.setPlaceholderText("Run logs will appear here.")
+        layout.addWidget(self.log_output)
         layout.addStretch(1)
 
         self.layer_selector.currentIndexChanged.connect(self._redraw_map)
@@ -353,6 +359,7 @@ class MainWindow(QMainWindow):
         self.current_plan = None
         self._set_busy(True)
         self.progress_bar.setValue(0)
+        self._append_log("Starting city generation.")
         self._start_worker(GenerateCityWorker(self.state.config), self._on_generation_finished, "Generate City failed")
 
     def _run_solver(self, max_lines: int) -> None:
@@ -361,6 +368,7 @@ class MainWindow(QMainWindow):
             return
         self._set_busy(True)
         self.progress_bar.setValue(0)
+        self._append_log(f"Starting solver up to {max_lines} lines.")
         self._start_worker(
             SolveWorker(
                 config=self.state.config,
@@ -448,6 +456,7 @@ class MainWindow(QMainWindow):
 
     def _start_worker(self, worker: QObject, on_finished, error_title: str) -> None:
         thread = QThread(self)
+        self._active_worker = worker
         worker.moveToThread(thread)
         thread.started.connect(worker.run)  # type: ignore[attr-defined]
         worker.progress.connect(self._on_worker_progress)  # type: ignore[attr-defined]
@@ -457,12 +466,14 @@ class MainWindow(QMainWindow):
         worker.failed.connect(thread.quit)  # type: ignore[attr-defined]
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._on_thread_finished)
         self._active_thread = thread
         thread.start()
 
     def _on_worker_progress(self, value: int, message: str) -> None:
         self.progress_bar.setValue(value)
         self.status_label.setText(message)
+        self._append_log(message)
 
     def _on_generation_finished(self, payload: object) -> None:
         data = payload if isinstance(payload, dict) else {}
@@ -471,6 +482,7 @@ class MainWindow(QMainWindow):
         self.state.od = data.get("od")
         self.progress_bar.setValue(100)
         self.status_label.setText("City generated")
+        self._append_log("City generation complete.")
         self._set_busy(False)
         self._redraw_map()
 
@@ -482,12 +494,22 @@ class MainWindow(QMainWindow):
         self._refresh_metrics_table()
         self.progress_bar.setValue(100)
         self.status_label.setText("Solver finished")
+        self._append_log("Solver complete.")
         self._set_busy(False)
         self._redraw_map()
 
     def _on_worker_failed(self, title: str, message: str) -> None:
         self._set_busy(False)
+        self._append_log(f"{title}: {message}")
         QMessageBox.critical(self, title, message)
+
+    def _on_thread_finished(self) -> None:
+        self._active_thread = None
+        self._active_worker = None
+
+    def _append_log(self, message: str) -> None:
+        timestamp = datetime.now(UTC).strftime("%H:%M:%S")
+        self.log_output.append(f"[{timestamp}] {message}")
 
     def _set_busy(self, busy: bool) -> None:
         self.btn_generate.setEnabled(not busy)
@@ -510,7 +532,8 @@ class MainWindow(QMainWindow):
             self.metrics_table.setItem(row, 1, QTableWidgetItem(f"{value}"))
 
     def _redraw_map(self) -> None:
-        ax = self.map_figure.subplots()
+        self.map_figure.clear()
+        ax = self.map_figure.add_subplot(111)
         if self.state.jobs is None or self.state.population is None:
             ax.clear()
             ax.set_title("Generate a city to view the map")
