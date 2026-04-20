@@ -11,7 +11,6 @@ class TransitTab(QWidget):
     def __init__(self, config: TransitRulesConfig) -> None:
         super().__init__()
         self.line_count = QSpinBox(); self.line_count.setRange(1, 32)
-        self.station_spacing_m = QSpinBox(); self.station_spacing_m.setRange(100, 5000)
         self.access_radius_m = QSpinBox(); self.access_radius_m.setRange(100, 5000)
         self.transfer_penalty_min = QDoubleSpinBox(); self.transfer_penalty_min.setRange(0.0, 60.0)
         self.max_turn_angle_deg = QDoubleSpinBox(); self.max_turn_angle_deg.setRange(0.0, 180.0)
@@ -22,7 +21,6 @@ class TransitTab(QWidget):
 
         form = QFormLayout(self)
         form.addRow("line count", self.line_count)
-        form.addRow("station spacing", self.station_spacing_m)
         form.addRow("access radius", self.access_radius_m)
         form.addRow("transfer penalty", self.transfer_penalty_min)
         form.addRow("max turn angle", self.max_turn_angle_deg)
@@ -34,7 +32,6 @@ class TransitTab(QWidget):
 
     def load_from_config(self, cfg: TransitRulesConfig) -> None:
         self.line_count.setValue(cfg.line_count)
-        self.station_spacing_m.setValue(cfg.station_spacing_m)
         self.access_radius_m.setValue(cfg.access_radius_m)
         self.transfer_penalty_min.setValue(cfg.transfer_penalty_min)
         self.max_turn_angle_deg.setValue(cfg.max_turn_angle_deg)

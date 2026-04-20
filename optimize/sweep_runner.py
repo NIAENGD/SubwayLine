@@ -12,7 +12,7 @@ import numpy as np
 from optimize.anchors import Anchor, extract_anchors
 from optimize.annealing import AnnealingResult, refine_with_annealing
 from optimize.corridor_scoring import Corridor, score_corridors
-from optimize.initial_builder import NetworkPlan, build_initial_network
+from optimize.initial_builder import NetworkLine, NetworkPlan, build_initial_network
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,30 @@ def _geometry_output(plan: NetworkPlan) -> list[dict[str, Any]]:
     for line in plan.lines:
         out.append({"line_id": line.id, "polyline": [[x, y] for x, y in line.points]})
     return out
+
+
+def _rank_lines_by_ridership(plan: NetworkPlan, od_matrix: np.ndarray, grid_shape: tuple[int, int]) -> NetworkPlan:
+    """Return a copy of plan with lines ordered by descending estimated ridership."""
+    if not plan.lines:
+        return plan
+
+    rows, cols = grid_shape
+    od = np.asarray(od_matrix, dtype=float)
+    if od.shape != (rows * cols, rows * cols):
+        return plan
+
+    throughput_by_tile = od.sum(axis=0) + od.sum(axis=1)
+
+    scored: list[tuple[float, NetworkLine]] = []
+    for line in plan.lines:
+        unique_pts = {(x, y) for x, y in line.points if 0 <= x < cols and 0 <= y < rows}
+        tile_indexes = [y * cols + x for x, y in unique_pts]
+        ridership = float(throughput_by_tile[tile_indexes].sum()) if tile_indexes else 0.0
+        scored.append((ridership, line))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    ranked_lines = [NetworkLine(id=f"L{i}", points=list(line.points)) for i, (_, line) in enumerate(scored, start=1)]
+    return NetworkPlan(lines=ranked_lines, metadata=dict(plan.metadata))
 
 
 def _save_line_count_outputs(base_dir: Path, result: LineCountResult) -> None:
@@ -114,14 +138,16 @@ def run_staged_line_sweep(
             rng=rng,
         )
 
-        warm_start = annealed.best_plan
+        ranked_best_plan = _rank_lines_by_ridership(annealed.best_plan, od_matrix, pop.shape)
+
+        warm_start = ranked_best_plan
         summary = annealed.best_summary.to_dict()
         metrics = annealed.best_summary.metrics.to_dict()
-        geometry = _geometry_output(annealed.best_plan)
+        geometry = _geometry_output(ranked_best_plan)
 
         result = LineCountResult(
             line_count=line_count,
-            best_plan=annealed.best_plan,
+            best_plan=ranked_best_plan,
             score_summary=summary,
             metrics=metrics,
             geometry=geometry,

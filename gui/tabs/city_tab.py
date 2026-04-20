@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QDoubleSpinBox, QFormLayout, QLineEdit, QSpinBox, QWidget
+from PySide6.QtWidgets import QDoubleSpinBox, QFormLayout, QLabel, QLineEdit, QSpinBox, QWidget
 
 from config.schema import CityConfig
 
@@ -12,7 +12,7 @@ class CityTab(QWidget):
         super().__init__()
         self.total_population = QSpinBox(); self.total_population.setRange(1, 50_000_000)
         self.total_jobs = QSpinBox(); self.total_jobs.setRange(1, 50_000_000)
-        self.tile_size = QSpinBox(); self.tile_size.setRange(16, 1024)
+        self.tile_size = QLabel("64 x 64 (fixed)")
         self.employment_preset = QLineEdit()
         self.population_preset = QLineEdit()
         self.halo_strength = QDoubleSpinBox(); self.halo_strength.setRange(0.0, 2.0); self.halo_strength.setSingleStep(0.05)
@@ -39,7 +39,6 @@ class CityTab(QWidget):
     def load_from_config(self, cfg: CityConfig) -> None:
         self.total_population.setValue(cfg.total_population)
         self.total_jobs.setValue(cfg.total_jobs)
-        self.tile_size.setValue(cfg.tile_size)
         self.employment_preset.setText(cfg.employment_preset)
         self.population_preset.setText(cfg.population_preset)
         self.halo_strength.setValue(cfg.halo_strength)

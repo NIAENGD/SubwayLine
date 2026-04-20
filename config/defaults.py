@@ -17,7 +17,7 @@ DEFAULT_SCHEMA_VERSION = "1.0.0"
 DEFAULT_CITY = CityConfig(
     total_population=1_000_000,
     total_jobs=600_000,
-    tile_size=128,
+    tile_size=64,
     employment_preset="polycentric",
     population_preset="mixed_ringed_us_style",
     halo_strength=0.35,
@@ -40,7 +40,6 @@ DEFAULT_DEMAND = DemandConfig(
 
 DEFAULT_TRANSIT_RULES = TransitRulesConfig(
     line_count=4,
-    station_spacing_m=900,
     access_radius_m=600,
     transfer_penalty_min=6.0,
     max_turn_angle_deg=50.0,

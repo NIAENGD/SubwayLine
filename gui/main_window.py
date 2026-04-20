@@ -304,7 +304,7 @@ class MainWindow(QMainWindow):
         c = CityConfig(
             total_population=self.city_tab.total_population.value(),
             total_jobs=self.city_tab.total_jobs.value(),
-            tile_size=self.city_tab.tile_size.value(),
+            tile_size=64,
             employment_preset=self.city_tab.employment_preset.text().strip() or "moderate_polycentric",
             population_preset=self.city_tab.population_preset.text().strip() or "mixed_ringed_us_style",
             halo_strength=self.city_tab.halo_strength.value(),
@@ -325,7 +325,6 @@ class MainWindow(QMainWindow):
         )
         t = TransitRulesConfig(
             line_count=self.transit_tab.line_count.value(),
-            station_spacing_m=self.transit_tab.station_spacing_m.value(),
             access_radius_m=self.transit_tab.access_radius_m.value(),
             transfer_penalty_min=self.transit_tab.transfer_penalty_min.value(),
             max_turn_angle_deg=self.transit_tab.max_turn_angle_deg.value(),
