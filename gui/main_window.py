@@ -52,10 +52,12 @@ def _load_config_io_module():
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, initial_config: AppConfig | None = None) -> None:
         super().__init__()
         self.setWindowTitle("SubwayLine")
         self.state = AppState()
+        if initial_config is not None:
+            self.state.set_config(initial_config)
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -110,6 +112,13 @@ class MainWindow(QMainWindow):
         self.btn_export_images.clicked.connect(self.on_export_images)
         self.btn_export_csv.clicked.connect(self.on_export_csv)
         self.btn_reset.clicked.connect(self.on_reset_defaults)
+
+        if initial_config is not None:
+            self.city_tab.load_from_config(initial_config.city)
+            self.demand_tab.load_from_config(initial_config.demand)
+            self.transit_tab.load_from_config(initial_config.transit_rules)
+            self.optimization_tab.load_from_config(initial_config.optimization)
+            self.batch_tab.load_from_config(initial_config.batch)
 
     def _parse_csv_floats(self, text: str) -> tuple[float, ...]:
         return tuple(float(x.strip()) for x in text.split(",") if x.strip())
