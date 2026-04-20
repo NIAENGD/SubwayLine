@@ -355,11 +355,15 @@ class MainWindow(QMainWindow):
         return replace(self.state.config, city=c, demand=d, transit_rules=t, optimization=o, batch=b)
 
     def on_generate_city(self) -> None:
-        self.state.set_config(self._collect_config())
+        cfg = self._collect_config()
+        randomized_seed = int(np.random.default_rng().integers(0, 1_000_000_001))
+        cfg = replace(cfg, city=replace(cfg.city, random_seed=randomized_seed))
+        self.city_tab.random_seed.setValue(randomized_seed)
+        self.state.set_config(cfg)
         self.current_plan = None
         self._set_busy(True)
         self.progress_bar.setValue(0)
-        self._append_log("Starting city generation.")
+        self._append_log(f"Starting city generation (seed={randomized_seed}).")
         self._start_worker(GenerateCityWorker(self.state.config), self._on_generation_finished, "Generate City failed")
 
     def _run_solver(self, max_lines: int) -> None:
@@ -383,14 +387,14 @@ class MainWindow(QMainWindow):
 
     def on_solve_selected(self) -> None:
         try:
-            self.state.set_config(self._collect_config())
+            self.state.config = self._collect_config()
             self._run_solver(self.state.config.transit_rules.line_count)
         except Exception as exc:
             QMessageBox.critical(self, "Solve failed", str(exc))
 
     def on_solve_1_8(self) -> None:
         try:
-            self.state.set_config(self._collect_config())
+            self.state.config = self._collect_config()
             self._run_solver(8)
         except Exception as exc:
             QMessageBox.critical(self, "Solve 1-8 failed", str(exc))
